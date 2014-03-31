@@ -1,0 +1,258 @@
+#!/usr/bin/php -d memory_limit=-1
+<?php
+
+/**
+  * @file
+  * Downloads RETS feed metadata and builds a string that can be used as a schema for a module
+  *
+  */
+
+require ('PATH to phrets.php v1.0rc2 or later');
+
+$rets = new phRETS;
+
+$rets_host = 'Your RETS Login URL';
+$rets_user = 'RETS User ID provided by your MLS provider';
+$rets_pass = 'RETS Password as provided by your MLS provider';
+$user_agent = 'RETS_class/1.0';
+$rets_version = 'RETS/1.5' ;
+
+$rets->AddHeader("Accept", "*/*");
+$rets->AddHeader("RETS-Version", "$rets_version");
+$rets->AddHeader("User-Agent", "$user_agent");
+$rets->SetParam("cookie_file", "phrets_cookies.txt");
+$rets->Connect($rets_host, $rets_user, $rets_pass);
+
+// uncomment below to save debug info to rets_debug.txt
+// $rets->SetParam("debug_mode", TRUE);
+
+/**
+  * Function: get_rets_tables
+  *
+  *     Retrieves the RETS metadata from the RETS providers server and builds an
+  * array of the result that we will use to build our schema from.
+  *
+  */
+function get_rets_tables($resource_info, $metadata_type) {
+	/* Put toghether all the rets info needed for database tables creation in an array. */
+	foreach ($metadata_type as $key => $value) {
+		$resource = $value['Resource'];
+
+		foreach ($value['Data'] as $key) {
+			$tables[$key['Description']] = array(
+				'ResourceID' => $resource,
+				'Description' => $key['Description'],
+				'ClassName' => $key['ClassName'],
+				'KeyField' => $resource_info[$resource]['KeyField'],
+				'ClassCount' => $resource_info[$resource]['ClassCount']
+			);
+		}
+	}
+
+	return $tables;
+}
+
+/**
+  * Function: create_drupal_schema_from_rets_metadata
+  *
+  *      This is where most of the real work gets accomplished. We loop through the provided
+  * RETS metadata for a given resource (Think type: Property, OpenHouse, Media etc.) and class
+  * of a resource (Think category: Residential, Commercial, Farm, Land, etc).
+  *
+  */
+
+function create_drupal_schema_from_rets_metadata($table_name, $rets_metadata, $key_field, $resource, $class) {
+	$schema_string = "\$schema['$table_name'] = array(
+  'description' => 'Storage for Resource: $resource -> $class',
+  'fields' => array(
+    'id' => array(
+      'description' => 'Internal auto-increment id',
+      'type' => 'serial',
+      'not null' => TRUE,
+    ),
+";
+
+	$indexes = array();
+
+	foreach ($rets_metadata as $field) {
+		$fieldname = $field['SystemName'];
+		$field_descr = addslashes($field['LongName']);
+		$field_def = "    '$fieldname' => array(
+      'description' => '$field_descr',\n";
+
+		switch ($field['Interpretation']) {
+			case "LookupMulti":
+				$field_def .= "      'type' => 'text',
+      'not null' => FALSE,
+    ),
+";
+				break;
+			case "Lookup":
+				$field_def .= "      'type' => 'varchar',
+      'length' => '50',
+      'not null' => TRUE,
+    ),
+";
+				break;
+			default:
+				switch ($field['DataType']) {
+					case "Int":
+						$field_def .= "      'type' => 'int',
+      'unsigned' => TRUE,
+      'not null' => TRUE,
+    ),
+";
+						break;
+					case "Small":
+						$field_def .= "      'type' => 'int',
+      'unsigned' => FALSE,
+      'not null' => TRUE,
+    ),
+";
+						break;
+					case "Tiny":
+						$field_def .= "      'type' => 'int',
+      'size' => tiny,
+      'unsigned' => FALSE,
+      'not null' => TRUE,
+    ),
+";
+						break;
+					case "Long":
+						$field_def .= "      'type' => 'bigint',
+      'unsigned' => TRUE,
+      'not null' => TRUE,
+    ),
+";
+						break;
+					/* If you don't have a datetime field provider in your Drupal install,
+					 * then you'll want to use a varchar field type here, in my experience
+					 * it needs to be a minimum of 23 in length
+					 */
+					case "DateTime":
+						$field_def .= "      'type' => 'datetime',
+      'default' => '0000-00-00 00:00:00',
+      'not null' => TRUE,
+    ),
+";
+						break;
+					case "Character":
+						if ($field['MaximumLength'] <= 255) {
+							$field_def .= "      'type' => 'varchar',
+      'length' => '{$field['MaximumLength']}',
+      'not null' => TRUE,
+    ),
+";
+						} 
+						elseif ($field['MaximumLength'] > 255) {
+							$field_def .= "      'type' => 'text',
+      'not null' => TRUE,
+    ),
+";
+						}
+						break;
+					case "Decimal":
+						$pre_point = ($field['MaximumLength'] - $field['Precision']);
+						$post_point = !empty($field['Precision']) ? $field['Precision'] : 0;
+						$field_def .= "      'type' => 'numeric',
+      'not null' => TRUE,
+      'precision' => '{$field['MaximumLength']}',
+      'scale' => '{$post_point}',
+    ),
+";
+						break;
+					case "Boolean":
+						$field_def .= "      'type' => 'int',
+      'not null' => TRUE,
+      'size' => 'tiny',
+      'default' => 0,
+    ),
+";
+						break;
+					case "Date":
+						$field_def .= "      'type' => 'date',
+      'not null' => TRUE,
+      'default' => '0000-00-00',
+    ),
+";
+						break;
+					case "Time":
+						$field_def .= "      'type' => 'time',
+      'not null' => TRUE,
+      'default' => '00:00:00',
+    ),
+";
+						break;
+					default:
+						$field_def .= "      'type' => 'varchar',
+      'length' => '255',
+    ),
+";
+						break;
+				}
+				break;
+		}
+
+		switch ($fieldname) {
+			case "$key_field":
+			case "ModificationTimestamp":
+			case "modified":
+			case "City":
+			case "MLNumber":
+			case "isDeleted":
+			case "MatrixTesting":
+			case "Status":
+				$indexes[] = $fieldname;
+				break;
+		}
+
+		$schema_string .= $field_def;
+	}
+
+	$schema_string .= "    'hash' => array(
+      'description' => 'Hash of record content.',
+      'type' => 'varchar',
+      'length' => '255',
+      'not null' => TRUE,
+    ),
+";
+	$index_def = "  'primary key' => array('id),
+  'indexes' => array(
+";
+
+	$indexes[] = 'hash';
+
+	// create indexes
+	foreach ($indexes as $index) {
+		$index_def .= "    '{$index}' => array('{$index}'),
+";
+	}
+
+	return $schema_string . $index_def . "
+  ),
+);";
+}
+
+$resource_info = $rets->GetMetadataInfo();
+$metadata_type = $rets->GetMetadataTypes();
+
+$tables = get_rets_tables($resource_info, $metadata_type);
+
+foreach ($tables as $key => $value) {
+	$resource = $value['ResourceID'];
+	$class = $value['ClassName'];
+
+	if ($resource == "media") {
+		continue;
+	}
+
+	$keyfield = $value['KeyField'];
+	$rets_metadata = $rets->GetMetadata($resource, $class);
+	$table_name = 'rets_' . strtolower($resource) . '_' . strtolower($class);
+
+	$schema = create_drupal_schema_from_rets_metadata($table_name, $rets_metadata, $keyfield, $resource, $class);
+	echo $schema . "\n";
+}
+
+$rets->Disconnect();
+
